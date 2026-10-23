@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Al revés – grabadora</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#EDF0F5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F1524" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+@font-face{font-family:"Bricolage Grotesque";font-weight:500;font-style:normal;font-display:swap;src:url("fonts/bricolage-500.woff2") format("woff2")}
+@font-face{font-family:"Bricolage Grotesque";font-weight:700;font-style:normal;font-display:swap;src:url("fonts/bricolage-700.woff2") format("woff2")}
+@font-face{font-family:"Bricolage Grotesque";font-weight:800;font-style:normal;font-display:swap;src:url("fonts/bricolage-800.woff2") format("woff2")}
+:root{
+  --bg:#EDF0F5; --surface:#FFFFFF; --ink:#16213A; --muted:#5E6A85; --line:#CDD4E2;
+  --rec:#E2384F; --fwd:#2F5BEA; --rev:#0E9F83; --wave:#9AA6C2;
+  color-scheme: light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1524; --surface:#18203A; --ink:#EAEFFC; --muted:#93A0C0; --line:#2B3658;
+    --rec:#FF5B70; --fwd:#7C9BFF; --rev:#3FD3B4; --wave:#55648C; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1524; --surface:#18203A; --ink:#EAEFFC; --muted:#93A0C0; --line:#2B3658;
+  --rec:#FF5B70; --fwd:#7C9BFF; --rev:#3FD3B4; --wave:#55648C; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:"Bricolage Grotesque",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex; justify-content:center;
+}
+main{width:100%; max-width:480px; padding:24px 20px 32px; display:flex; flex-direction:column; gap:20px; min-height:100vh}
+h1{font-size:2.4rem; line-height:1; margin:8px 0 0; font-weight:800; letter-spacing:-.02em}
+h1 span{display:inline-block; transform:scaleX(-1)}
+p.sub{margin:0; color:var(--muted); font-size:1rem; line-height:1.4}
+
+.stage{background:var(--surface); border:1px solid var(--line); border-radius:20px; padding:14px}
+canvas{width:100%; height:140px; display:block}
+.meta{display:flex; justify-content:space-between; color:var(--muted); font-size:.9rem; margin-top:8px}
+
+#rec{
+  align-self:center; width:112px; height:112px; border-radius:50%;
+  border:6px solid var(--line); background:var(--rec); color:#fff;
+  font:700 1rem "Bricolage Grotesque",system-ui,sans-serif; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; text-align:center; padding:0;
+  transition:transform .15s, border-color .15s;
+}
+#rec:active{transform:scale(.95)}
+#rec.on{border-color:var(--rec); border-radius:28px}
+.hint{text-align:center; color:var(--muted); margin:-6px 0 0; font-size:.95rem; min-height:1.3em}
+
+.row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+.play{
+  border:2px solid currentColor; background:var(--surface); border-radius:16px;
+  padding:16px 10px; font:700 1.05rem "Bricolage Grotesque",system-ui,sans-serif; cursor:pointer;
+  min-height:64px;
+}
+.play.fwd{color:var(--fwd)} .play.rev{color:var(--rev)}
+.play.active{background:currentColor}
+.play.active span{color:var(--surface)}
+.play span{color:inherit}
+.play:disabled{opacity:.35; cursor:default}
+#err{color:var(--rec); text-align:center; font-size:.95rem; line-height:1.4; margin:0}
+button:focus-visible{outline:3px solid var(--fwd); outline-offset:3px}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Al <span>revés</span></h1>
+    <p class="sub">Grabá un sonido y escuchalo normal o dado vuelta.</p>
+  </header>
+
+  <section class="stage">
+    <canvas id="cv" aria-label="Forma de onda del audio"></canvas>
+    <div class="meta"><span id="state">Sin grabación</span><span id="time">0.0 s</span></div>
+  </section>
+
+  <button id="rec" type="button">Grabar</button>
+  <p class="hint" id="hint">Tocá el círculo para empezar</p>
+
+  <div class="row">
+    <button class="play fwd" id="pf" type="button" disabled><span>Original</span></button>
+    <button class="play rev" id="pr" type="button" disabled><span>En reversa</span></button>
+  </div>
+  <p id="err" role="alert"></p>
+</main>
+
+<script>
+(function(){
+  var MAX_SECONDS = 60;
+  var cv = document.getElementById('cv'), g = cv.getContext('2d');
+  var recBtn = document.getElementById('rec'), hint = document.getElementById('hint');
+  var pf = document.getElementById('pf'), pr = document.getElementById('pr');
+  var stateEl = document.getElementById('state'), timeEl = document.getElementById('time');
+  var errEl = document.getElementById('err');
+
+  var ctx = null, stream = null, mr = null, chunks = [], recStart = 0, recTimer = null;
+  var analyser = null, live = [], liveRaf = 0;
+  var bufs = {fwd:null, rev:null}, peaks = {fwd:null, rev:null};
+  var shown = 'fwd', src = null, playing = null, playStart = 0, playRaf = 0;
+
+  function css(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+  function size(){
+    var r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+    cv.width = Math.round(r.width*d); cv.height = Math.round(r.height*d);
+    g.setTransform(d,0,0,d,0,0);
+  }
+  function drawBars(values, progress, color){
+    var w = cv.clientWidth, h = cv.clientHeight, n = values.length;
+    g.clearRect(0,0,w,h);
+    var step = w/n, bw = Math.max(2, step*0.6), mid = h/2;
+    for(var i=0;i<n;i++){
+      var v = Math.max(0.02, Math.min(1, values[i]));
+      var done = progress != null && (i/n) <= progress;
+      g.fillStyle = done ? color : css('--wave');
+      var bh = v*(h-10);
+      g.beginPath();
+      if(g.roundRect) g.roundRect(i*step+(step-bw)/2, mid-bh/2, bw, bh, bw/2); else g.rect(i*step+(step-bw)/2, mid-bh/2, bw, bh);
+      g.fill();
+    }
+  }
+  function computePeaks(buf, n){
+    var ch = buf.getChannelData(0), size = Math.floor(ch.length/n) || 1, out = [], max = 0;
+    for(var i=0;i<n;i++){
+      var m = 0, s = i*size, e = Math.min(ch.length, s+size);
+      for(var j=s;j<e;j++){ var a = Math.abs(ch[j]); if(a>m) m=a; }
+      out.push(m); if(m>max) max=m;
+    }
+    return max>0 ? out.map(function(v){return v/max;}) : out;
+  }
+  function redraw(progress){
+    if(!peaks[shown]){ drawBars(new Array(48).fill(0.02), null); return; }
+    drawBars(peaks[shown], progress, shown==='fwd' ? css('--fwd') : css('--rev'));
+  }
+  function setError(t){ errEl.textContent = t || ''; }
+  function fmt(s){ return s.toFixed(1)+' s'; }
+
+  function getCtx(){
+    if(!ctx){ var AC = window.AudioContext || window.webkitAudioContext; ctx = new AC(); }
+    if(ctx.state === 'suspended') ctx.resume();
+    return ctx;
+  }
+
+  /* ---------- Grabar ---------- */
+  function liveLoop(){
+    if(!analyser) return;
+    var data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    var sum = 0; for(var i=0;i<data.length;i++){ var v=(data[i]-128)/128; sum+=v*v; }
+    var rms = Math.sqrt(sum/data.length);
+    live.push(Math.min(1, rms*4));
+    if(live.length>48) live.shift();
+    while(live.length<48) live.unshift(0.02);
+    drawBars(live, 1, css('--rec'));
+    timeEl.textContent = fmt((performance.now()-recStart)/1000);
+    liveRaf = requestAnimationFrame(liveLoop);
+  }
+
+  async function startRec(){
+    setError('');
+    stopPlay();
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){
+      setError('Este navegador no puede grabar audio. Probá con Chrome actualizado.');
+      return;
+    }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    }catch(e){
+      setError('No se pudo usar el micrófono. Permití el acceso en el navegador y probá de nuevo.');
+      return;
+    }
+    var c = getCtx();
+    var srcNode = c.createMediaStreamSource(stream);
+    analyser = c.createAnalyser(); analyser.fftSize = 1024;
+    srcNode.connect(analyser);
+    chunks = [];
+    mr = new MediaRecorder(stream);
+    mr.ondataavailable = function(e){ if(e.data && e.data.size) chunks.push(e.data); };
+    mr.onstop = onStopped;
+    mr.start();
+    recStart = performance.now(); live = [];
+    recBtn.classList.add('on'); recBtn.textContent = 'Parar';
+    hint.textContent = 'Grabando… tocá para parar';
+    stateEl.textContent = 'Grabando';
+    pf.disabled = pr.disabled = true;
+    liveRaf = requestAnimationFrame(liveLoop);
+    recTimer = setTimeout(stopRec, MAX_SECONDS*1000);
+  }
+
+  function stopRec(){
+    clearTimeout(recTimer);
+    if(mr && mr.state !== 'inactive') mr.stop();
+  }
+
+  async function onStopped(){
+    cancelAnimationFrame(liveRaf); analyser = null;
+    if(stream){ stream.getTracks().forEach(function(t){t.stop();}); stream = null; }
+    recBtn.classList.remove('on'); recBtn.textContent = 'Grabar';
+    stateEl.textContent = 'Procesando…';
+    try{
+      var blob = new Blob(chunks, {type: mr.mimeType || 'audio/webm'});
+      var arr = await blob.arrayBuffer();
+      var c = getCtx();
+      var buf = await new Promise(function(ok, no){ c.decodeAudioData(arr, ok, no); });
+      var rev = c.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+      for(var ch=0; ch<buf.numberOfChannels; ch++){
+        var d = new Float32Array(buf.getChannelData(ch)); d.reverse();
+        rev.copyToChannel(d, ch);
+      }
+      bufs.fwd = buf; bufs.rev = rev;
+      peaks.fwd = computePeaks(buf, 48); peaks.rev = peaks.fwd.slice().reverse();
+      shown = 'fwd'; redraw(null);
+      pf.disabled = pr.disabled = false;
+      stateEl.textContent = 'Lista para reproducir';
+      timeEl.textContent = fmt(buf.duration);
+      hint.textContent = 'Elegí cómo escucharla';
+    }catch(e){
+      setError('No se pudo procesar el audio. Probá grabar de nuevo.');
+      stateEl.textContent = 'Sin grabación'; hint.textContent = 'Tocá el círculo para empezar';
+    }
+  }
+
+  /* ---------- Reproducir ---------- */
+  function stopPlay(){
+    cancelAnimationFrame(playRaf);
+    if(src){ src.onended = null; try{ src.stop(); }catch(e){} src = null; }
+    playing = null;
+    pf.classList.remove('active'); pr.classList.remove('active');
+    pf.firstChild.textContent = 'Original'; pr.firstChild.textContent = 'En reversa';
+    if(bufs.fwd){ redraw(null); stateEl.textContent = 'Lista para reproducir'; timeEl.textContent = fmt(bufs.fwd.duration); }
+  }
+
+  function play(which){
+    if(playing === which){ stopPlay(); return; }
+    stopPlay();
+    var c = getCtx(), buf = bufs[which];
+    if(!buf) return;
+    shown = which; playing = which;
+    src = c.createBufferSource(); src.buffer = buf; src.connect(c.destination);
+    src.onended = stopPlay;
+    playStart = c.currentTime; src.start();
+    var btn = which==='fwd' ? pf : pr;
+    btn.classList.add('active'); btn.firstChild.textContent = 'Parar';
+    stateEl.textContent = which==='fwd' ? 'Sonando original' : 'Sonando en reversa';
+    (function tick(){
+      var p = Math.min(1, (c.currentTime-playStart)/buf.duration);
+      redraw(p); timeEl.textContent = fmt(Math.min(buf.duration, c.currentTime-playStart));
+      if(playing) playRaf = requestAnimationFrame(tick);
+    })();
+  }
+
+  recBtn.addEventListener('click', function(){ (mr && mr.state === 'recording') ? stopRec() : startRec(); });
+  pf.addEventListener('click', function(){ play('fwd'); });
+  pr.addEventListener('click', function(){ play('rev'); });
+  window.addEventListener('resize', function(){ size(); redraw(null); });
+  size(); redraw(null);
+  if('serviceWorker' in navigator){ window.addEventListener('load', function(){ navigator.serviceWorker.register('sw.js').catch(function(){}); }); }
+})();
+</script>
+</body>
+</html>
